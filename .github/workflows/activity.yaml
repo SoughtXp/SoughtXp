@@ -27,7 +27,7 @@ jobs:
       - name: Refresh last-activity card
         id: gen
         env:
-          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN != '' && secrets.OVERVIEW_TOKEN || secrets.GITHUB_TOKEN }}
           PROFILE_USER: ${{ github.repository_owner }}
           MODE: activity
         run: python .github/scripts/overview.py

@@ -38,10 +38,10 @@ DAYS_FILE = "assets/overview/days.json"
 
 # Palette. Calendar states: marked / past / future, plus neutral text accents.
 # Marked-day colour matches the mascot's eye (assets/hello.png).
-MARKED_LIGHT = "#ffffff"
-MARKED_DARK = "#ffffff"
-RED_LIGHT = "#cf222e"
-RED_DARK = "#f85149"
+MARKED_LIGHT = "#2ea043"
+MARKED_DARK = "#39d353"
+RED_LIGHT = "#d0d7de"
+RED_DARK = "#21262d"
 FUTURE_LIGHT = "#ebedf0"
 FUTURE_DARK = "#30363d"
 NEUTRAL_LIGHT = "#121212"
@@ -153,7 +153,7 @@ def _describe(ev):
     return (f"{label} in {repo}" if repo else label, "", repo_url)
 
 
-def fetch_recent_activities(limit=3):
+def fetch_recent_activities(limit=10):
     """Most recent activities of any kind, plus a profile-edit check.
 
     Returns a list of (label, detail, url, when_iso), newest first.
@@ -165,25 +165,35 @@ def fetch_recent_activities(limit=3):
     #    Falls back to the public feed when no token is available.
     try:
         if TOKEN:
-            events = _req(f"{API}/user/events?per_page=100")
+            try:
+                events = _req(f"{API}/user/events?per_page=100")
+            except urllib.error.HTTPError as e:
+                print(f"WARNING: /user/events failed ({e.code}), falling back to public feed", flush=True)
+                events = _req(f"{API}/users/{USER}/events?per_page=100")
         else:
             events = _req(f"{API}/users/{USER}/events?per_page=100")
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as e:
+        print(f"WARNING: events API failed ({e.code})", flush=True)
         events = []
     for ev in events:
         when = ev.get("created_at", "")
         label, detail, url = _describe(ev)
         cands.append((_parse(when), (label, detail, url, when)))
 
-    # 2) Profile / bio edits: the user object carries an updated_at that bumps
-    #    when the profile changes.
+    # 2) Profile / bio edits: only add if the user explicitly has a bio set
+    #    and updated_at is recent (within 24h), to avoid noise from API calls
+    #    bumping updated_at automatically.
     try:
         user = _req(f"{API}/users/{USER}")
         updated = user.get("updated_at", "")
-        if updated:
-            cands.append((_parse(updated),
-                          ("Updated profile", user.get("bio") or "",
-                           f"https://github.com/{USER}", updated)))
+        bio = user.get("bio") or ""
+        if updated and bio:
+            dt = _parse(updated)
+            age = (datetime.now(timezone.utc) - dt).total_seconds()
+            if age < 86400:
+                cands.append((_parse(updated),
+                              ("Updated profile", bio,
+                               f"https://github.com/{USER}", updated)))
     except urllib.error.HTTPError:
         pass
 
@@ -251,7 +261,7 @@ def render_recent(events, dark):
     """Card listing the most recent activities, newest first."""
     width = 420
     header_h, line_h = 30, 24
-    rows = events[:3]
+    rows = events[:10]
     n = max(1, len(rows))
     height = header_h + n * line_h + 12
 
@@ -356,7 +366,7 @@ def write(path, content):
 # --------------------------------------------------------------------------- #
 
 def run_activity():
-    events = fetch_recent_activities(3)
+    events = fetch_recent_activities(10)
     write("assets/overview/last_light.svg", render_recent(events, dark=False))
     write("assets/overview/last_dark.svg", render_recent(events, dark=True))
     link = events[0][2] if events else f"https://github.com/{USER}"
