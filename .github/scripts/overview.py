@@ -160,11 +160,14 @@ def fetch_recent_activities(limit=3):
     """
     cands = []  # (datetime, (label, detail, url, when))
 
-    # 1) Any public event (commits, PRs, issues, stars, forks, releases,
-    #    activity on other people's repos, ...). Private-repo events are not
-    #    exposed by this feed.
+    # 1) Any event (commits, PRs, issues, stars, forks, releases, ...).
+    #    /user/events requires authentication and includes private-repo events.
+    #    Falls back to the public feed when no token is available.
     try:
-        events = _req(f"{API}/users/{USER}/events?per_page=100")
+        if TOKEN:
+            events = _req(f"{API}/user/events?per_page=100")
+        else:
+            events = _req(f"{API}/users/{USER}/events?per_page=100")
     except urllib.error.HTTPError:
         events = []
     for ev in events:
