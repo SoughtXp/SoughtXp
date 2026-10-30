@@ -2,7 +2,9 @@ name: activity
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub Actions minimum)
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
