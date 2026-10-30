@@ -1,0 +1,42 @@
+name: mark-day
+
+# Manual only: run this to mark today as a day you showed up.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: overview
+  cancel-in-progress: false
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Mark today on the calendar
+        env:
+          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN || secrets.GITHUB_TOKEN }}
+          PROFILE_USER: ${{ github.repository_owner }}
+          MODE: mark
+        run: python .github/scripts/overview.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "Sought Xp"
+          git config user.email "dev@soughtxp.dev"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add assets/overview
+            CID="I$(head -c 20 /dev/urandom | sha1sum | cut -d' ' -f1)"
+            git commit -m "SoughtXp: mark today on the calendar" -m "Change-Id: $CID"
+            git push
+          else
+            echo "nothing changed"
+          fi

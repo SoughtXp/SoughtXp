@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 150" width="640" height="150" role="img" aria-label="About me">
+  <style>
+    .t { font-family: Inter,SF Pro Display,Segoe UI,Helvetica,Arial,sans-serif; font-size: 17px; }
+    .base { fill: #3a3a3a; }
+    .hl { fill: #25D366; font-weight: 700; }
+    .em { fill: #121212; font-weight: 700; }
+  </style>
+  <text class="t" x="0" y="26">
+    <tspan class="base">Hi, I'm </tspan><tspan class="em">Sought Xp</tspan><tspan class="base">. I love </tspan><tspan class="hl">Android</tspan><tspan class="base">, </tspan><tspan class="hl">reverse engineering</tspan><tspan class="base">,</tspan>
+  </text>
+  <text class="t base" x="0" y="52">and digging into <tspan class="hl">any code</tspan> that makes me curious.</text>
+  <text class="t base" x="0" y="94">If something works in a way I don't understand,</text>
+  <text class="t base" x="0" y="120">I open it up and find out why.</text>
+</svg>
