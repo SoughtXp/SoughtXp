@@ -14,6 +14,7 @@ concurrency:
 jobs:
   mark:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
 
@@ -21,9 +22,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Mark today on the calendar
+      - name: Mark today and refresh card
         env:
-          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN != '' && secrets.OVERVIEW_TOKEN || secrets.GITHUB_TOKEN }}
           PROFILE_USER: ${{ github.repository_owner }}
           MODE: mark
         run: python .github/scripts/overview.py

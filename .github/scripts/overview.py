@@ -1,87 +1,46 @@
 #!/usr/bin/env python3
 """Generate the Overview section of the profile README.
 
-Two independent modes (selected by the MODE env var):
-
-  MODE=activity  -> refresh the "recent activity" card. Runs automatically on a
-                    cron. Picks up *any* public GitHub activity (commits, PRs,
-                    issues, repo create/delete, stars, forks, releases,
-                    comments, activity on other people's repos, ...) plus
-                    profile/bio edits (detected via the user's updated_at). The
-                    card lists the most recent activities with a relative time
-                    and stamps when it was refreshed.
-
-  MODE=mark      -> mark TODAY on the manual calendar. Runs on manual dispatch
-                    only. Appends today's date to assets/overview/days.json and
-                    redraws the calendar. Calendar colours: a marked day is
-                    green, a past unmarked day is red, today and future days use
-                    a neutral colour.
-
-Both modes write light + dark SVGs. Designed to run inside a GitHub Action with
-GITHUB_TOKEN, but the activity feed also works unauthenticated (lower rate
-limit).
+MODE=activity  → refresh the activity card (auto, cron + push trigger).
+                 The card shows recent events and a PRESENCE counter (N/365).
+MODE=mark      → mark today in days.json and refresh the card.
 """
 
 import json
 import os
-import sys
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, date, timedelta
 
-USER = os.environ.get("PROFILE_USER", "SoughtXp")
-MODE = os.environ.get("MODE", "activity").strip().lower()
+USER  = os.environ.get("PROFILE_USER", "SoughtXp")
+MODE  = os.environ.get("MODE", "activity").strip().lower()
 TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-API = "https://api.github.com"
+API   = "https://api.github.com"
 
 DAYS_FILE = "assets/overview/days.json"
 
-# Palette. Calendar states: marked / past / future, plus neutral text accents.
-# Marked-day colour matches the mascot's eye (assets/hello.png).
-MARKED_LIGHT = "#2ea043"
-MARKED_DARK = "#39d353"
-RED_LIGHT = "#d0d7de"
-RED_DARK = "#21262d"
-FUTURE_LIGHT = "#ebedf0"
-FUTURE_DARK = "#30363d"
-NEUTRAL_LIGHT = "#121212"
-NEUTRAL_DARK = "#ffffff"
-BG_LIGHT = "#f4f5f7"
-BG_DARK = "#1a1a1a"
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG_L    = "#ffffff"
+BG_D    = "#0d0d0d"
+TEXT_L  = "#1f2328"
+TEXT_D  = "#e6edf3"
+MUTED_L = "#57606a"
+MUTED_D = "#8b949e"
+LINE_L  = "#d0d7de"
+LINE_D  = "#30363d"
 
-# Human-readable labels for the GitHub event types
-EVENT_LABELS = {
-    "PushEvent": "Pushed commits",
-    "PullRequestEvent": "Pull request",
-    "PullRequestReviewEvent": "Reviewed a pull request",
-    "PullRequestReviewCommentEvent": "Commented on a pull request",
-    "IssuesEvent": "Issue",
-    "IssueCommentEvent": "Commented on an issue",
-    "CreateEvent": "Created",
-    "DeleteEvent": "Deleted",
-    "ForkEvent": "Forked a repo",
-    "WatchEvent": "Starred a repo",
-    "ReleaseEvent": "Published a release",
-    "CommitCommentEvent": "Commented on a commit",
-    "PublicEvent": "Made a repo public",
-    "MemberEvent": "Updated collaborators",
-    "GollumEvent": "Edited the wiki",
-}
+FONT = "font-family: 'SF Mono', 'Fira Code', 'Roboto Mono', monospace"
 
 
-def _req(url, data=None, headers=None):
-    hdr = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": f"{USER}-profile-overview",
-    }
+# ── GitHub API ────────────────────────────────────────────────────────────────
+def _req(url):
+    hdr = {"Accept": "application/vnd.github+json",
+           "User-Agent": f"{USER}-overview"}
     if TOKEN:
         hdr["Authorization"] = f"Bearer {TOKEN}"
-    if headers:
-        hdr.update(headers)
-    body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body, headers=hdr)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+    req = urllib.request.Request(url, headers=hdr)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
 
 
 def _parse(iso):
@@ -91,129 +50,103 @@ def _parse(iso):
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-# --------------------------------------------------------------------------- #
-# Recent activity (automatic)
-# --------------------------------------------------------------------------- #
+# ── Event → display ───────────────────────────────────────────────────────────
+def _short(full):
+    return full.split("/")[-1] if "/" in full else full
+
 
 def _describe(ev):
-    """Turn a raw event into (label, short_detail, url)."""
-    t = ev.get("type", "")
-    repo = ev.get("repo", {}).get("name", "")
-    payload = ev.get("payload", {})
-    repo_url = f"https://github.com/{repo}"
-    label = EVENT_LABELS.get(t, t.replace("Event", ""))
+    t    = ev.get("type", "")
+    full = ev.get("repo", {}).get("name", "")
+    repo = _short(full)
+    pl   = ev.get("payload", {})
+    rurl = f"https://github.com/{full}"
 
     if t == "PushEvent":
-        commits = payload.get("commits") or []
-        size = payload.get("size") or len(commits)
+        commits = pl.get("commits") or []
+        size    = pl.get("size") or len(commits)
+        ref     = pl.get("ref", "")
+        branch  = ref.split("/")[-1] if ref else ""
         if commits:
-            detail = commits[-1]["message"].splitlines()[0]
-            sha = commits[-1]["sha"]
-            url = f"{repo_url}/commit/{sha}"
+            msg = commits[-1]["message"].splitlines()[0]
+            url = f"{rurl}/commit/{commits[-1]['sha']}"
         else:
-            count = size or ""
-            detail = f"{count} commit{'s' if count != 1 else ''}" if count else ""
-            ref = payload.get("ref", "")
-            branch = ref.split("/")[-1] if ref else ""
-            url = f"{repo_url}/tree/{branch}" if branch else repo_url
-        return (f"Pushed to {repo}", detail, url)
+            msg = f"{size or 1} commit(s)"
+            url = f"{rurl}/tree/{branch}" if branch else rurl
+        return (repo, msg, url)
+
     if t == "PullRequestEvent":
-        pr = payload.get("pull_request", {})
-        action = payload.get("action", "")
-        return (f"PR {action} in {repo}", pr.get("title", ""),
-                pr.get("html_url", repo_url))
-    if t in ("IssuesEvent",):
-        issue = payload.get("issue", {})
-        action = payload.get("action", "")
-        return (f"Issue {action} in {repo}", issue.get("title", ""),
-                issue.get("html_url", repo_url))
+        pr     = pl.get("pull_request", {})
+        merged = pr.get("merged", False)
+        action = pl.get("action", "")
+        verb   = "merged PR" if merged else f"{action} PR"
+        return (f"{repo} — {verb}", pr.get("title", ""), pr.get("html_url", rurl))
+
+    if t == "IssuesEvent":
+        issue  = pl.get("issue", {})
+        action = pl.get("action", "")
+        return (f"{repo} — issue {action}", issue.get("title", ""),
+                issue.get("html_url", rurl))
+
     if t == "IssueCommentEvent":
-        issue = payload.get("issue", {})
-        return (f"Commented in {repo}", issue.get("title", ""),
-                payload.get("comment", {}).get("html_url", repo_url))
-    if t == "WatchEvent":
-        return (f"Starred {repo}", "", repo_url)
-    if t == "ForkEvent":
-        forkee = payload.get("forkee", {})
-        return (f"Forked {repo}", "", forkee.get("html_url", repo_url))
+        issue = pl.get("issue", {})
+        return (f"{repo} — commented", issue.get("title", ""),
+                pl.get("comment", {}).get("html_url", rurl))
+
     if t == "CreateEvent":
-        ref_type = payload.get("ref_type", "")
-        ref = payload.get("ref") or repo
-        return (f"Created {ref_type} in {repo}", ref, repo_url)
+        return (f"{repo} — created {pl.get('ref_type','')}", pl.get("ref") or "", rurl)
+
     if t == "DeleteEvent":
-        return (f"Deleted {payload.get('ref_type','')} in {repo}",
-                payload.get("ref", ""), repo_url)
+        return (f"{repo} — deleted {pl.get('ref_type','')}", pl.get("ref", ""), rurl)
+
+    if t == "WatchEvent":
+        return (f"starred {full}", "", rurl)
+
+    if t == "ForkEvent":
+        fk = pl.get("forkee", {})
+        return (f"forked {full}", "", fk.get("html_url", rurl))
+
     if t == "ReleaseEvent":
-        rel = payload.get("release", {})
-        return (f"Released in {repo}", rel.get("name") or rel.get("tag_name", ""),
-                rel.get("html_url", repo_url))
-    if t == "PublicEvent":
-        return (f"Made {repo} public", "", repo_url)
-    # Generic fallback for any other event type
-    return (f"{label} in {repo}" if repo else label, "", repo_url)
+        rel = pl.get("release", {})
+        return (f"{repo} — release", rel.get("name") or rel.get("tag_name", ""),
+                rel.get("html_url", rurl))
+
+    return (f"{repo} — {t.replace('Event','').lower()}", "", rurl)
 
 
-def fetch_recent_activities(limit=10):
-    """Most recent activities of any kind, plus a profile-edit check.
-
-    Returns a list of (label, detail, url, when_iso), newest first.
-    """
-    cands = []  # (datetime, (label, detail, url, when))
-
-    # 1) Any event (commits, PRs, issues, stars, forks, releases, ...).
-    #    /user/events requires authentication and includes private-repo events.
-    #    Falls back to the public feed when no token is available.
+# ── Fetch events ──────────────────────────────────────────────────────────────
+def fetch_recent(limit=10):
+    raw = []
     try:
         if TOKEN:
             try:
-                events = _req(f"{API}/user/events?per_page=100")
+                raw = _req(f"{API}/user/events?per_page=100")
+                print(f"fetched /user/events → {len(raw)} events", flush=True)
             except urllib.error.HTTPError as e:
-                print(f"WARNING: /user/events failed ({e.code}), falling back to public feed", flush=True)
-                events = _req(f"{API}/users/{USER}/events?per_page=100")
+                print(f"WARNING: /user/events → {e.code}, falling back", flush=True)
+                raw = _req(f"{API}/users/{USER}/events?per_page=100")
         else:
-            events = _req(f"{API}/users/{USER}/events?per_page=100")
+            raw = _req(f"{API}/users/{USER}/events?per_page=100")
     except urllib.error.HTTPError as e:
-        print(f"WARNING: events API failed ({e.code})", flush=True)
-        events = []
-    for ev in events:
-        when = ev.get("created_at", "")
-        label, detail, url = _describe(ev)
-        cands.append((_parse(when), (label, detail, url, when)))
+        print(f"WARNING: events API → {e.code}", flush=True)
 
-    # 2) Profile / bio edits: only add if the user explicitly has a bio set
-    #    and updated_at is recent (within 24h), to avoid noise from API calls
-    #    bumping updated_at automatically.
-    try:
-        user = _req(f"{API}/users/{USER}")
-        updated = user.get("updated_at", "")
-        bio = user.get("bio") or ""
-        if updated and bio:
-            dt = _parse(updated)
-            age = (datetime.now(timezone.utc) - dt).total_seconds()
-            if age < 86400:
-                cands.append((_parse(updated),
-                              ("Updated profile", bio,
-                               f"https://github.com/{USER}", updated)))
-    except urllib.error.HTTPError:
-        pass
+    print(f"processing {len(raw)} raw events", flush=True)
 
-    cands.sort(key=lambda c: c[0], reverse=True)
     out, seen = [], set()
-    for _, payload in cands:
-        key = (payload[0], payload[2])
+    for ev in raw:
+        when               = ev.get("created_at", "")
+        label, detail, url = _describe(ev)
+        key                = (label, url)
         if key in seen:
             continue
         seen.add(key)
-        out.append(payload)
+        out.append((label, detail, url, when))
         if len(out) >= limit:
             break
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Manual calendar (day tracker)
-# --------------------------------------------------------------------------- #
-
+# ── Days helpers ──────────────────────────────────────────────────────────────
 def load_days():
     try:
         with open(DAYS_FILE, encoding="utf-8") as f:
@@ -235,155 +168,132 @@ def mark_today(days):
     return days, today
 
 
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
+def presence_counter(days):
+    """Return (marked, total_days_in_year) for the current year."""
+    year  = datetime.now(timezone.utc).year
+    total = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
+    n     = sum(1 for d in days if d.startswith(str(year)))
+    return n, total, year
 
-def esc(text):
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+
+# ── SVG helpers ───────────────────────────────────────────────────────────────
+def esc(t):
+    return (str(t).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def human_when(iso):
-    dt = _parse(iso)
-    delta = datetime.now(timezone.utc) - dt
-    s = int(delta.total_seconds())
-    if s < 60:
-        return "just now"
-    if s < 3600:
-        return f"{s // 60}m ago"
-    if s < 86400:
-        return f"{s // 3600}h ago"
-    return f"{s // 86400}d ago"
+def _cut(s, n):
+    s = str(s)
+    return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def render_recent(events, dark):
-    """Card listing the most recent activities, newest first."""
-    width = 420
-    header_h, line_h = 30, 24
-    rows = events[:10]
-    n = max(1, len(rows))
-    height = header_h + n * line_h + 12
+def age(iso):
+    s = int((datetime.now(timezone.utc) - _parse(iso)).total_seconds())
+    if s < 60:    return "just now"
+    if s < 3600:  return f"{s // 60}m"
+    if s < 86400: return f"{s // 3600}h"
+    return f"{s // 86400}d"
 
-    bg = BG_DARK if dark else BG_LIGHT
-    muted = "#c9c9c9" if dark else "#3a3a3a"
-    strong = NEUTRAL_DARK if dark else NEUTRAL_LIGHT
-    stamp = datetime.now(timezone.utc).strftime("%b %d, %H:%M UTC")
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="Recent activity">',
-        '<style>.t{font-family:Inter,Segoe UI,Helvetica,Arial,sans-serif}</style>',
-        f'<rect x="0.5" y="0.5" width="{width-1}" height="{height-1}" rx="10" '
-        f'fill="{bg}" stroke="{strong}" stroke-opacity="0.35"/>',
-        f'<text class="t" x="16" y="20" font-size="13" font-weight="700" '
-        f'fill="{strong}">Recent activity</text>',
-        f'<text class="t" x="{width-16}" y="20" font-size="10" fill="{muted}" '
-        f'text-anchor="end">updated {stamp}</text>',
+# ── Activity card ─────────────────────────────────────────────────────────────
+def render_activity(events, days, dark):
+    W      = 480
+    PAD    = 20
+    HDR    = 32
+    ROW    = 38
+    FOOT   = 28   # footer row for presence counter
+    rows   = events[:10]
+    n      = max(1, len(rows))
+    H      = HDR + n * ROW + FOOT + 8
+
+    bg     = BG_D    if dark else BG_L
+    tx     = TEXT_D  if dark else TEXT_L
+    mu     = MUTED_D if dark else MUTED_L
+    ln     = LINE_D  if dark else LINE_L
+    stamp  = datetime.now(timezone.utc).strftime("%b %d · %H:%M UTC")
+
+    marked, total, year = presence_counter(days)
+
+    o = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'viewBox="0 0 {W} {H}" role="img" aria-label="Recent activity">',
+        f'<style>text {{ {FONT}; }}</style>',
+        f'<rect width="{W}" height="{H}" fill="{bg}"/>',
+        f'<line x1="{PAD}" y1="{HDR}" x2="{W-PAD}" y2="{HDR}" stroke="{ln}" stroke-width="1"/>',
+        f'<text x="{PAD}" y="20" font-size="11" fill="{mu}" letter-spacing="2">RECENT ACTIVITY</text>',
+        f'<text x="{W-PAD}" y="20" font-size="10" fill="{mu}" text-anchor="end">{esc(stamp)}</text>',
     ]
+
     if not rows:
-        parts.append(
-            f'<text class="t" x="32" y="{header_h + 18}" font-size="12.5" '
-            f'fill="{muted}">No recent activity</text>')
+        o.append(f'<text x="{PAD}" y="{HDR+22}" font-size="12" fill="{mu}">no recent activity</text>')
     else:
         for i, (label, detail, _url, when) in enumerate(rows):
-            y = header_h + 16 + i * line_h
-            parts.append(
-                f'<circle cx="20" cy="{y-4}" r="3" fill="{strong}"/>')
-            parts.append(
-                f'<text class="t" x="32" y="{y}" font-size="12.5" '
-                f'font-weight="600" fill="{strong}">{esc(label[:38])}</text>')
-            parts.append(
-                f'<text class="t" x="{width-16}" y="{y}" font-size="11" '
-                f'fill="{muted}" text-anchor="end">{esc(human_when(when))}</text>')
-    parts.append("</svg>")
-    return "\n".join(parts)
+            base = HDR + i * ROW
+            mid  = base + ROW // 2
+
+            o.append(
+                f'<text x="{PAD}" y="{mid - 4}" font-size="12" font-weight="700" '
+                f'fill="{tx}">{esc(_cut(label, 44))}</text>')
+
+            if detail:
+                o.append(
+                    f'<text x="{PAD}" y="{mid + 10}" font-size="11" '
+                    f'fill="{mu}">{esc(_cut(detail, 56))}</text>')
+
+            o.append(
+                f'<text x="{W-PAD}" y="{mid + 4}" font-size="10" '
+                f'fill="{mu}" text-anchor="end">{esc(age(when))}</text>')
+
+            if i < n - 1:
+                sep = base + ROW
+                o.append(
+                    f'<line x1="{PAD}" y1="{sep}" x2="{W-PAD}" y2="{sep}" '
+                    f'stroke="{ln}" stroke-width="0.5"/>')
+
+    # footer: presence counter
+    foot_y = HDR + n * ROW
+    o.append(f'<line x1="{PAD}" y1="{foot_y}" x2="{W-PAD}" y2="{foot_y}" stroke="{ln}" stroke-width="0.5"/>')
+    o.append(
+        f'<text x="{PAD}" y="{foot_y + 18}" font-size="10" fill="{mu}" letter-spacing="1">'
+        f'PRESENCE {year}</text>')
+    o.append(
+        f'<text x="{W-PAD}" y="{foot_y + 18}" font-size="11" font-weight="700" '
+        f'fill="{tx}" text-anchor="end">{marked} / {total}</text>')
+
+    o.append("</svg>")
+    return "\n".join(o)
 
 
-def render_calendar(days, dark):
-    """GitHub-style grid for the whole current year.
-
-    Colours: a marked day is green, a past unmarked day is red, today and every
-    future day use a neutral colour.
-    """
-    cell, gap, pad, top = 11, 3, 16, 50
-    now = datetime.now(timezone.utc).date()
-    year = now.year
-    jan1 = date(year, 1, 1)
-    dec31 = date(year, 12, 31)
-    # Grid starts on the Sunday on/just before Jan 1 (GitHub layout)
-    start = jan1 - timedelta(days=(jan1.weekday() + 1) % 7)
-    total_days = (dec31 - start).days + 1
-    weeks = (total_days + 6) // 7
-
-    width = pad * 2 + weeks * (cell + gap)
-    height = top + 7 * (cell + gap) + pad
-    marked = MARKED_DARK if dark else MARKED_LIGHT
-    red = RED_DARK if dark else RED_LIGHT
-    future = FUTURE_DARK if dark else FUTURE_LIGHT
-    text = "#c9c9c9" if dark else "#3a3a3a"
-    strong = NEUTRAL_DARK if dark else NEUTRAL_LIGHT
-
-    marked_this_year = sum(1 for d in days if d.startswith(str(year)))
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="Days I showed up in {year}">',
-        '<style>.t{font-family:Inter,Segoe UI,Helvetica,Arial,sans-serif}</style>',
-        f'<text class="t" x="{pad}" y="22" font-size="14" font-weight="700" '
-        f'fill="{strong}">Days I showed up in {year}</text>',
-        f'<text class="t" x="{pad}" y="40" font-size="12" fill="{text}">'
-        f'{marked_this_year} day{"s" if marked_this_year != 1 else ""} marked</text>',
-    ]
-    for wi in range(weeks):
-        x = pad + wi * (cell + gap)
-        for dow in range(7):
-            d = start + timedelta(days=wi * 7 + dow)
-            if d < jan1 or d > dec31:
-                continue
-            y = top + dow * (cell + gap)
-            iso = d.isoformat()
-            if iso in days:
-                fill = marked
-            elif d < now:
-                fill = red
-            else:
-                fill = future
-            parts.append(
-                f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" rx="2" '
-                f'ry="2" fill="{fill}"><title>{iso}</title></rect>')
-    parts.append("</svg>")
-    return "\n".join(parts)
-
-
+# ── I/O ───────────────────────────────────────────────────────────────────────
 def write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content + "\n")
-    print(f"wrote {path}")
+    print(f"wrote {path}", flush=True)
 
 
-# --------------------------------------------------------------------------- #
-
+# ── Entry points ──────────────────────────────────────────────────────────────
 def run_activity():
-    events = fetch_recent_activities(10)
-    write("assets/overview/last_light.svg", render_recent(events, dark=False))
-    write("assets/overview/last_dark.svg", render_recent(events, dark=True))
+    days   = load_days()
+    events = fetch_recent(10)
+    write("assets/overview/last_light.svg", render_activity(events, days, dark=False))
+    write("assets/overview/last_dark.svg",  render_activity(events, days, dark=True))
     link = events[0][2] if events else f"https://github.com/{USER}"
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
         with open(gh_out, "a", encoding="utf-8") as f:
             f.write(f"last_url={link}\n")
-    print(f"last_url={link}")
+    print(f"last_url={link}", flush=True)
 
 
 def run_mark():
     days = load_days()
     days, today = mark_today(days)
     save_days(days)
-    write("assets/overview/calendar_light.svg", render_calendar(days, dark=False))
-    write("assets/overview/calendar_dark.svg", render_calendar(days, dark=True))
-    print(f"marked {today} ({len(days)} day(s) total)")
+    events = fetch_recent(10)
+    write("assets/overview/last_light.svg", render_activity(events, days, dark=False))
+    write("assets/overview/last_dark.svg",  render_activity(events, days, dark=True))
+    print(f"marked {today} ({len(days)} total)", flush=True)
 
 
 def main():
